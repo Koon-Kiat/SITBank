@@ -120,8 +120,8 @@ matrix in `tests/test_admin_rbac_matrix.py` exercises unauthenticated,
 customer-isolated, staff, admin, and root-admin access to representative read
 and mutation routes and verifies denied mutations have no privileged side
 effects. Targeted service tests retain deeper coverage for staff invites,
-manual recovery, maker-checker approval, and the manual-only root-admin
-bootstrap boundary.
+manual recovery, direct root-admin actions, legacy approval-record handling,
+and the manual-only root-admin bootstrap boundary.
 
 Playwright E2E browser tests cover authentication, MFA, session, banking, and
 boundary regressions, including registration, password reset, manual recovery,
