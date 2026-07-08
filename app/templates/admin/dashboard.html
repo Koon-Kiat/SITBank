@@ -127,6 +127,9 @@
           <p class="muted">{{ item.description }}</p>
         </div>
         <span class="badge neutral">{{ item.status }}</span>
+        {% if item.href %}
+        <a class="button secondary small" href="{{ item.href }}">Open</a>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
