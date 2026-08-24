@@ -1,5 +1,5 @@
 # Keep the version tag for Dependabot tracking; the digest controls the content.
-FROM python:3.12.13-slim-trixie@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e AS builder
+FROM python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -11,7 +11,7 @@ RUN /opt/venv/bin/python -m pip install \
     --require-hashes \
     --requirement /tmp/requirements.lock
 
-FROM python:3.12.13-slim-trixie@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e AS runtime
+FROM python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS runtime
 
 ARG VCS_REF=unknown
 ARG SOURCE_URL=unknown
